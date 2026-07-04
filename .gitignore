@@ -1,0 +1,13 @@
+﻿#*.env
+#config.py
+#*.json
+#*.csv
+#-----------
+#-----------
+# Sensitive credentials
+.env
+
+# Data files
+*.json
+!samples/flights_sample.json
+*.csv
