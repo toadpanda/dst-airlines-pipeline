@@ -5,6 +5,7 @@ DROP TABLE IF EXISTS dim_city;
 DROP TABLE IF EXISTS dim_airport;
 DROP TABLE IF EXISTS dim_aircraft;
 DROP TABLE IF EXISTS dim_airline;
+DROP TABLE IF EXISTS dim_date;
 DROP TABLE IF EXISTS dim_time;
 DROP TABLE IF EXISTS dim_flight_position;
 DROP TABLE IF EXISTS fact_flight;
@@ -36,7 +37,7 @@ CREATE TABLE dim_airport (
     latitude DECIMAL(9,6),
     longitude DECIMAL(9,6),
     country_code CHAR(2),
-    FOREIGN KEY (country_code) REFERENCES dim_countries(country_code_2)
+    FOREIGN KEY (country_code) REFERENCES dim_country(country_code_2)
 );
 -- surrogate ID (auto-increment): when pushing DF to the DB (to_sql()), do not include airport_id column.
 -- The column is defined as SERIAL, the database will automatically assign the ID to each row as it arrives (counting upwards from 1)
@@ -60,19 +61,35 @@ CREATE TABLE dim_airline (
     FOREIGN KEY (country_code) REFERENCES dim_country(country_code_2)
 );
 
+CREATE TABLE dim_date (
+    date_key INT PRIMARY KEY,
+    full_date DATE NOT NULL,
+    year INT NOT NULL,
+    quarter INT NOT NULL,
+    month INT NOT NULL,
+    month_name VARCHAR(20) NOT NULL,
+    day_of_month INT NOT NULL,
+    day_of_week INT NOT NULL,
+    day_name VARCHAR(20) NOT NULL,
+    day_of_year INT NOT NULL,
+    is_weekend BOOLEAN NOT NULL,
+    is_month_start BOOLEAN NOT NULL,
+    is_month_end BOOLEAN NOT NULL
+);
+
 CREATE TABLE dim_time (
-    time_key INT PRIMARY KEY, -- Formatted as YYYYMMDDHHMM
-    flight_timestamp TIMESTAMP NOT NULL,
-    date_part DATE NOT NULL,
-    hour_part INT NOT NULL,
-    minute_part INT NOT NULL,
-    day_of_week VARCHAR(10) NOT NULL,
-    is_weekend INT NOT NULL -- 1 for True, 0 for False
+    time_key INT PRIMARY KEY, -- Formatted as HHMM
+    time_string TIME NOT NULL,
+    hour_24 INT NOT NULL,
+    hour_12 INT NOT NULL,
+    minute INT NOT NULL,
+    am_pm CHAR(2) NOT NULL,
+    shift VARCHAR(20) NOT NULL
 );
 
 CREATE TABLE dim_flight_position (
     position_key SERIAL PRIMARY KEY, -- Surrogate ID
-    flight_id INT,
+    flight_id VARCHAR(50),
     aircraft_altitude INT,
     aircraft_latitude DECIMAL(9,6),
     aircraft_longitude DECIMAL(9,6),
@@ -86,23 +103,28 @@ CREATE TABLE dim_flight_position (
 -- =====================================
 
 CREATE TABLE fact_flight (
-    flight_id INTEGER PRIMARY KEY, -- Sequential Integer
+    flight_id VARCHAR(50) PRIMARY KEY, -- combination flight code + date
     flight_number VARCHAR(10),
     movement_type VARCHAR(10), -- 'departure' or 'arrival' / or 'global'?
     status VARCHAR(20),
     dep_delayed_min DECIMAL(5,2), -- drop and create in PowerBI later?
     arr_delayed_min DECIMAL(5,2), -- drop and create in PowerBI later?
-    time_key INT,
+
+    updated_date_key INT,
+    updated_time_key INT,
+
     origin_airport_id INT,
     dest_airport_id INT,
     airline_icao CHAR(3),
     aircraft_hex CHAR(6),
+
     scheduled_dep_time TIMESTAMP,
     actual_dep_time TIMESTAMP,
     scheduled_arr_time TIMESTAMP,
     actual_arr_time TIMESTAMP,
 
-    FOREIGN KEY (time_key) REFERENCES dim_time(time_key),
+    FOREIGN KEY (updated_date_key) REFERENCES dim_date(date_key),
+    FOREIGN KEY (updated_time_key) REFERENCES dim_time(time_key),
     FOREIGN KEY (origin_airport_id) REFERENCES dim_airport(airport_id),
     FOREIGN KEY (dest_airport_id) REFERENCES dim_airport(airport_id),
     FOREIGN KEY (airline_icao) REFERENCES dim_airline(icao_code),
