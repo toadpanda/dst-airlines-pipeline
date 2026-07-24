@@ -52,7 +52,7 @@ def ingest_flight_data(endpoint_key, params=None, cache_name=None, verbose=True)
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Define the path relative to the root
-        output_dir = os.path.join(script_dir, 'data', 'raw')
+        output_dir = os.path.join(script_dir, '../data', 'raw')
 
         # Create the folder safely
         os.makedirs(output_dir, exist_ok=True)
@@ -157,7 +157,7 @@ def inspect_endpoint_data(data, cache_name=None):
 
     # Optional Automated CSV Caching
     if cache_name:
-        data_dir = os.path.join(config.BASE_DIR, 'data')
+        data_dir = os.path.join(config.BASE_DIR, '../data')
         os.makedirs(data_dir, exist_ok=True)
 
         file_path = os.path.join(data_dir, f"{cache_name}.csv")

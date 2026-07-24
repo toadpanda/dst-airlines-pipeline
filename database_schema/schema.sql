@@ -39,12 +39,11 @@ CREATE TABLE dim_airport (
     country_code CHAR(2),
     FOREIGN KEY (country_code) REFERENCES dim_country(country_code_2)
 );
--- surrogate ID (auto-increment): when pushing DF to the DB (to_sql()), do not include airport_id column.
 -- The column is defined as SERIAL, the database will automatically assign the ID to each row as it arrives (counting upwards from 1)
 
 CREATE TABLE dim_aircraft (
     hex CHAR(6) PRIMARY KEY, -- transponder hex code; unique, hardware-level id for an aircraft
-    reg_number VARCHAR(10) UNIQUE,
+    reg_number VARCHAR(10),
     icao_code CHAR(4),
     iata_code CHAR(3),
     model VARCHAR(100),
