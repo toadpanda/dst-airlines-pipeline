@@ -30,10 +30,9 @@ CREATE TABLE dim_city (
 );
 
 CREATE TABLE dim_airport (
-    airport_id SERIAL PRIMARY KEY, -- Surrogate ID (Auto-increment ???)
-    airport_name VARCHAR(255) NOT NULL,
+    icao_code CHAR(4) PRIMARY KEY,
     iata_code CHAR(3),
-    icao_code CHAR(4) UNIQUE NOT NULL,
+    airport_name VARCHAR(255),
     latitude DECIMAL(9,6),
     longitude DECIMAL(9,6),
     country_code CHAR(2),
@@ -49,7 +48,7 @@ CREATE TABLE dim_aircraft (
     model VARCHAR(100),
     manufacturer VARCHAR(100),
     airline_icao CHAR(3),
-    FOREIGN KEY (airline_icao) REFERENCES dim_airline(airline_icao)
+    FOREIGN KEY (airline_icao) REFERENCES dim_airline(icao_code)
 );
 
 CREATE TABLE dim_airline (
@@ -87,7 +86,7 @@ CREATE TABLE dim_time (
 );
 
 CREATE TABLE dim_flight_position (
-    position_key SERIAL PRIMARY KEY, -- Surrogate ID
+    position_key VARCHAR(100) PRIMARY KEY, -- Smart key
     flight_id VARCHAR(50),
     aircraft_altitude INT,
     aircraft_latitude DECIMAL(9,6),
@@ -104,7 +103,6 @@ CREATE TABLE dim_flight_position (
 CREATE TABLE fact_flight (
     flight_id VARCHAR(50) PRIMARY KEY, -- combination flight code + date
     flight_number VARCHAR(10),
-    movement_type VARCHAR(10), -- 'departure' or 'arrival' / or 'global'?
     status VARCHAR(20),
     dep_delayed_min DECIMAL(5,2), -- drop and create in PowerBI later?
     arr_delayed_min DECIMAL(5,2), -- drop and create in PowerBI later?
@@ -112,8 +110,8 @@ CREATE TABLE fact_flight (
     updated_date_key INT,
     updated_time_key INT,
 
-    origin_airport_id INT,
-    dest_airport_id INT,
+    dep_icao CHAR(4),
+    arr_icao CHAR(4),
     airline_icao CHAR(3),
     aircraft_hex CHAR(6),
 
@@ -124,8 +122,8 @@ CREATE TABLE fact_flight (
 
     FOREIGN KEY (updated_date_key) REFERENCES dim_date(date_key),
     FOREIGN KEY (updated_time_key) REFERENCES dim_time(time_key),
-    FOREIGN KEY (origin_airport_id) REFERENCES dim_airport(airport_id),
-    FOREIGN KEY (dest_airport_id) REFERENCES dim_airport(airport_id),
+    FOREIGN KEY (dep_icao) REFERENCES dim_airport(icao_code),
+    FOREIGN KEY (arr_icao) REFERENCES dim_airport(icao_code),
     FOREIGN KEY (airline_icao) REFERENCES dim_airline(icao_code),
     FOREIGN KEY (aircraft_hex) REFERENCES dim_aircraft(hex)
 );
