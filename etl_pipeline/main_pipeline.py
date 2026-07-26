@@ -3,6 +3,7 @@
 from pathlib import Path
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.types import Integer
 
 # Import utils
 from api_utils import run_batch_ingestion
@@ -106,9 +107,6 @@ if not db_exists:
     dim_airlines = clean_airlines_db(df['airlinesDB'])
     dim_aircrafts = clean_aircraft_db(df['fleetsDB'])
 
-    # Create Dependent Fact Table & Telemetry/Time Dimension
-    # fact_flights, dim_flight_position, df_live_aircraft_patch = clean_flights(df['flights'])
-
     # ================================
     # Load Dim & Fact Tables into SQL
     print("Loading dimension and fact tables into the database...")
@@ -120,14 +118,10 @@ if not db_exists:
     dim_airlines.to_sql('dim_airline', engine, if_exists='append', index=False)
     dim_aircrafts.to_sql('dim_aircraft', engine, if_exists='append', index=False)
 
-    # Dependent Dimensions & Fact
-    # fact_flights.to_sql('fact_flight', engine, if_exists='append', index=False)
-    # dim_flight_position.to_sql('dim_flight_position', engine, if_exists='append', index=False)
-
     print("Initial setup complete! Database created and populated successfully.")
 
 else:
-    print("Existing database found. Skipping schema creation. Ready for incremental append.")
+    print("Existing database found. Skipping initialization.")
 
 # =========================================================================
 # DAILY INCREMENTAL RUN (Runs every execution)

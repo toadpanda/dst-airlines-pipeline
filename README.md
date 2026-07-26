@@ -5,8 +5,7 @@ An automated ETL and data processing pipeline designed to ingest, clean and stru
 This repository houses the core Data Engineering ingestion pipeline and exploratory data analysis sandbox for our group project. 
 
 * **Pipeline Architect & Core Developer:** Leoni Gilke
-  * Designed, implemented, and authored the entire codebase currently hosted in this repository,
-  including the automation script (`main_pipeline.py`), ETL pipeline utilities (`pipeline_utils.py`), API wrappers (`api_utils.py`), and configuration frameworks (`config.py`).
+  * Designed, implemented, and authored the entire codebase currently hosted in this repository, including the execution scripts (`pipeline_init.py`, `pipeline_monthly.py`, `pipeline_daily.py`), ETL pipeline utilities (`pipeline_utils.py`), API wrappers (`api_utils.py`), and configuration frameworks (`config.py`).
 * **Project Team:** Rustam U.
   * Collaborating on project conceptualization, analytical reporting, and downstream dashboard development.
 
@@ -30,12 +29,13 @@ To ensure optimal storage efficiency and data integrity, data types and column c
 
 ---
 
-## Workflow Pipeline ('ELT' Architecture)
-Our pipeline follows an **ELT (Extract, Load, Transform)** architecture designed for scalability and analytical readiness:
+## Workflow Pipeline Architecture
+Our pipeline follows a structured architecture divided across distinct operational scripts for optimal modularity:
 
-1. **Extraction (`api_utils.py`):** Handles communication protocols, session handlers, and endpoint requests with built-in API quota protection.
+1. **Extraction (`api_utils.py`):** Handles communication protocols, session handlers, and endpoint requests with built-in API quota protection and raw CSV caching.
 2. **Transformation (`pipeline_utils.py`):** Cleans data, standardizes naming conventions, backfills missing attributes, and structures information into Fact and Dimension tables.
-3. **Loading (`main_pipeline.py`):** Manages initial schema initialization and routine daily incremental runs using safe SQL transactions and delta appends.
+3. **Execution & Loading (`etl_pipeline/`):** Orchestrates database loading via a **3-script approach** separating initialization, monthly reference syncs, and daily incremental telemetry runs.
+
 ---
 
 ## Repository Structure
@@ -44,14 +44,17 @@ Our pipeline follows an **ELT (Extract, Load, Transform)** architecture designed
 dst-airlines-pipeline/
 │
 ├── database/
-│   └── airlines_warehouse.db   # The generated DB (ignored in git)
+│   └── airlines_warehouse.db   # The generated SQLite DB (ignored in git)
 ├── database_schema/
 │   └── schema.sql              # Core DDL statements for tables, PKs, and FKs
 ├── etl_pipeline/
-│   └── main_pipeline.py        # Main orchestrator script for initial setup and daily runs
-│   └── pipeline_utils.py       # Core ETL transformation and data cleaning utility functions
-│   └── api_utils.py            # Core utilities for handling API connections and requests
-│   └── config.py               # Centralized configuration parameters and environment keys
+│   ├── pipeline_init.py        # One-time database initialization and historical seeding
+│   ├── pipeline_monthly.py     # Monthly static reference data synchronization script
+│   ├── pipeline_daily.py       # Routine daily incremental flight telemetry orchestrator
+│   ├── pipeline_utils.py       # Core ETL transformation and data cleaning utility functions
+│   ├── api_utils.py            # Core utilities for handling API connections and requests
+│   ├── config.py               # Centralized configuration parameters and environment keys
+│   └── main_pipeline.py        # (replaced through pipeline_init.py, pipeline_monthly.py and pipeline_daily.py)
 ├── deliverables/
 │   └── Report_1.md             # Project report and initial analytical findings
 ├── samples/
@@ -75,11 +78,13 @@ dst-airlines-pipeline/
    ```Bash
    pip install pandas SQLAlchemy python-dotenv requests
    ```
-5. Execute the Pipeline: Navigate to the project root directory and run the orchestrator script:
+5. Execute the Pipeline: Navigate to the project root directory and run the 3 scripts:
     ```Bash
-    python etl_pipeline/main_pipeline.py
+    python etl_pipeline/pipeline_init.py
+    python etl_pipeline/pipeline_monthly.py
+    python etl_pipeline/pipeline_daily.py
     ```
-    (The script will automatically detect a missing database, initialize the schema from `database_schema/schema.sql`, populate static dimensions, and execute the daily incremental run).
+   
 ---
 
 ## Data Sample
@@ -114,26 +119,60 @@ The following JSON structure demonstrates the data captured from the `flights` e
 ---
 
 ## Data Pipeline Utilities
-The `pipeline_utils.py` module contains the core transformation and loading logic for cleaning raw API responses and structuring them into a star schema relational database format.
+The `pipeline_utils.py` module contains core transformation, cleaning, and incremental loading logic:
 
-### Key Functions & Transformations:
-* **`clean_airlines_db(df)`**: Processes raw airline data, filters for valid ICAO primary keys, standardizes missing IATA codes with `'000'`, handles deduplication, and maps fields to target `dim_airlines` schema requirements.
-* **`clean_airports_db(df)`**: Cleans airport records by ensuring mandatory coordinate data (`lat`, `lng`) and ICAO primary keys exist, while normalizing missing IATA codes.
+* **`clean_airlines_db(df)`**: Processes raw airline data, filters for valid ICAO primary keys, standardizes missing IATA codes with `'000'`, maps API `'flag'` attributes to `'country_code'` to satisfy foreign key constraints with `dim_country`, converts missing values to proper SQL nulls, and handles deduplication.
+* **`clean_airports_db(df)`**: Cleans airport records by ensuring mandatory coordinate data and ICAO primary keys exist, while normalizing missing IATA codes.
 * **`clean_aircraft_db(df)`**: Formats fleet metadata for `dim_aircraft`, dropping unidentifiable records lacking a hex code and safely backfilling missing registrations with `'UNKNOWN_REG'`.
-* **`clean_cities_db(df)` & `clean_countries_db(df)`**: Standardize geographical references, enforce uppercase formatting for country codes, and eliminate duplicates based on primary identifiers.
+* **`clean_cities_db(df)` & `clean_countries_db(df)`**: Standardize geographical references, enforce uppercase formatting for country codes, and eliminate duplicates.
 * **`clean_schedules(df)`**: Standardizes raw airport schedule datasets, converts UNIX/string times to standard datetimes, and renames delay metrics for schema alignment.
 * **`clean_flights(df_flights)`**: 
-  * Parses raw real-time flight telemetry, dropping noisy low-density columns and safely generating a `time_key` from UNIX timestamps.
-  * Generates a composite smart key (`flight_id`) to maintain a strict relational link between the parent **`fact_flight`** table and the child **`dim_flight_position`** telemetry table.
-  * Extracts a live aircraft metadata patch (`df_live_aircraft_patch`) for downstream enrichment.
+  * Parses raw real-time flight telemetry, dropping noisy columns and safely generating a `time_key` from UNIX timestamps.
+  * Generates composite smart keys (`position_key` and `flight_id`) with strict `.drop_duplicates(subset=['position_key'])` deduplication to prevent SQLite `UNIQUE constraint failed` errors.
+  * Extracts a live aircraft metadata patch (`df_live_aircraft_patch`) for downstream dimension enrichment.
 * **`build_fact_flight(fact_flights, df_clean_schedules)`**: Left-joins cleaned schedules onto real-time live flights to construct the fully realized fact table matching the target schema.
-* **`load_incremental_flights(engine, fact_flights, dim_flight_position)`**: Queries the database to prevent duplicate ingestion of existing `flight_id`s, appends new flight records, and logs audit counts for monitoring.
-* **`enrich_dim_aircraft` & `enrich_dim_airlines`**: Incrementally update dimensions using live telemetry data feeds, dynamically patching missing metadata, backfilling missing registration numbers using historical lookups, and safely appending brand-new entities.
+* **`load_incremental_flights(engine, fact_flights, dim_flight_position)`**: Queries the database to prevent duplicate ingestion of existing records, appends new deltas safely, and logs audit metrics.
+* **`enrich_dim_aircraft`, `enrich_dim_airlines`, & `enrich_dim_airports`**: Incrementally update dimensions using live telemetry data feeds, dynamically patching missing metadata and safely appending brand-new entities.
+
+### Verbose Logging Control (`verbose`)
+All pipeline scripts and cleaning functions support an optional boolean `verbose` flag (default: `False`). When enabled (`verbose=True`), the pipeline outputs detailed processing statistics, record counts at each transformation phase, and incremental merge metrics directly to the terminal for debugging and audit transparency.
 
 ---
 
-## Pipeline Architecture & Execution (`main_pipeline.py`)
-The orchestrator script manages the full lifecycle of the data warehouse:
-* **Setup:** Automatically detects whether the database exists. On first run, it builds the schema from `database_schema/schema.sql`, seeds static date/time dimensions, and loads baseline database entities.
-* **Safe Incremental Updates:** Routine execution ingests fresh flight and schedule feeds, merges telemetry data, and pushes delta loads into the fact tables.
-* **Schema-Protected Dimension Refresh:** Utilizes transactional `DELETE` and `append` patterns wrapped in SQLAlchemy engine transactions to refresh dimension tables (`dim_aircraft`, `dim_airline`) with live telemetry data without destroying relational constraints or table schemas.
+## Pipeline Architecture & Execution
+The `pipeline_utils.py` module contains core transformation, cleaning, and incremental loading logic:
+>*outdated*
+
+---
+
+## The 3-Script Execution Approach
+To maintain clean separation of concerns between fast-changing operational telemetry and slow-changing global reference metadata, the pipeline is structured into three discrete scripts:
+
+1. **Database Initialization (`pipeline_init.py`)**
+   * **Purpose:** Sets up the database schema from `database_schema/schema.sql`, generates the 10-year calendar (`dim_date`) and minute-grain time dimension (`dim_time`), and executes the initial baseline ingest.
+   * **Execution:** Run manually once.
+
+2. **Monthly Static Data Refresh (`pipeline_monthly.py`)**
+   * **Purpose:** Periodically synchronizes the warehouse’s dimension tables with the latest global aviation reference data (airports, airlines, cities, countries, and aircraft fleets).
+   * **Execution Strategy:** Employs a full-refresh pattern for reference entities. It clears stale static records safely via `DELETE` statements and re-inserts fresh, cleaned payloads from the AirLabs API.
+   * **Safety Safeguards:** Implements intelligent merge safeguards that inspect existing database records to preserve and protect established daily patches (such as incrementally enriched IATA codes, country codes, and aircraft registration numbers like `UNKNOWN_REG`) from being overwritten by null or default API values.
+
+3. **Daily Incremental Ingestion (`pipeline_daily.py`)**
+   * **Purpose:** Pulls live flight telemetry and schedules, cleans and structures them into `fact_flight` and `dim_flight_position`, live-patches missing dimension metadata, and appends new unseen flights incrementally.
+   * **Execution Strategy:** Runs routinely to capture live delta states and append telemetry points safely.
+
+---
+
+## Automated Execution (Cron Jobs)
+For production or scheduled server environments, the monthly and daily scripts can be automated using Cron:
+```Bash
+# 1. Monthly Refresh: Runs at 02:00 AM on the 1st day of every month
+0 2 1 * * /usr/bin/python3 /path/to/project/etl_pipeline/pipeline_monthly.py >> /path/to/project/logs/monthly.log 2>&1
+
+# 2. Daily Flight Ingestion: Runs every day at 05:00 AM
+0 5 * * * /usr/bin/python3 /path/to/project/etl_pipeline/pipeline_daily.py >> /path/to/project/logs/daily.log 2>&1
+```
+---
+
+## Future Enhancement
+* **Directional Movement Tracking (movement_type)**: While current analytical queries successfully determine flight directionality using origin and destination code matching relative to the primary hub (LHR), introducing an explicit boolean or categorical movement_type attribute in a future iteration would streamline real-time operational auditing. This would allow the ingestion layer to instantly flag turnaround times and gate-congestions metrics without secondary relational filtering."
