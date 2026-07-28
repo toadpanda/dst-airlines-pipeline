@@ -174,5 +174,13 @@ For production or scheduled server environments, the monthly and daily scripts c
 ```
 ---
 
+## Pipeline & Data Model Improvements
+
+* **Composite Key Merging for Flight Schedules:** Updated the `build_fact_flight` pipeline utility to perform a composite join (`flight_icao` + calendar date key) when attaching schedule telemetry to live flights. This eliminates cross-day data corruption, prevents schedule timestamp nullification, and guarantees that inbound and outbound flight records align accurately with their correct operational dates.
+* **Idempotent Telemetry Ingestion:** Enhanced `load_incremental_flights` to query existing `position_key` records prior to insertion. This prevents unique constraint failures when executing the daily pipeline multiple times within the same minute, ensuring safe and repeatable upserts.
+* **Automated Stale Data Cleanup:** Integrated a pre-execution pipeline step in `pipeline_daily.py` utilizing a database-relative date threshold (`MAX(updated_date_key)`) to automatically transition stale "en-route" flights older than 24 hours to "assumed-landed", preventing inflated active flight metrics caused by incomplete global telemetry.
+
+---
+
 ## Future Enhancement
 * **Directional Movement Tracking (movement_type)**: While current analytical queries successfully determine flight directionality using origin and destination code matching relative to the primary hub (LHR), introducing an explicit boolean or categorical movement_type attribute in a future iteration would streamline real-time operational auditing. This would allow the ingestion layer to instantly flag turnaround times and gate-congestions metrics without secondary relational filtering."

@@ -54,13 +54,39 @@ if not db_exists:
 else:
     print("Starting routine flight & schedule ingestion...")
 
-    # Pull live flights separately
+    # =========================================================================
+    # STALE DATA CLEANUP
+    try:
+        print("Cleaning up stale en-route flights...")
+        with engine.begin() as connection:
+            # Find the highest date key present in the database
+            latest_record = connection.execute(text("SELECT MAX(updated_date_key) FROM fact_flight;")).fetchone()
+
+            if latest_record and latest_record[0]:
+                latest_date = int(latest_record[0])
+
+                # Simple rule: if a flight's date key is older than the latest date key minus 1, mark it assumed-landed
+                # (Assuming YYYYMMDD format, subtracting 1 day approximately works for integer keys, or you can adjust as needed)
+                cutoff_date = latest_date - 1
+
+                cleanup_query = text("""
+                        UPDATE fact_flight
+                        SET status = 'assumed-landed'
+                        WHERE status = 'en-route'
+                          AND updated_date_key < :cutoff_date
+                    """)
+                result = connection.execute(cleanup_query, {"cutoff_date": cutoff_date})
+                print(f"Cleanup: Marked {result.rowcount} stale en-route flights as assumed-landed.")
+    except Exception as e:
+        print(f"Notice: Stale flight cleanup skipped: {e}")
+
+    # Pull live flights globally (unfiltered)
     df_raw_flights = run_batch_ingestion({'flights': {}}, verbose=VERBOSE_PIPELINE)
 
-    # Pull departure schedules separately
+    # Pull departure schedules, specifically for our target airport
     df_raw_sched_dep = run_batch_ingestion({'schedules': {'dep_icao': 'EGLL'}}, verbose=VERBOSE_PIPELINE)
 
-    # Pull arrival schedules separately
+    # Pull arrival schedules, specifically for our target airport
     df_raw_sched_arr = run_batch_ingestion({'schedules': {'arr_icao': 'EGLL'}}, verbose=VERBOSE_PIPELINE)
 
     # Extract individual DataFrames safely
@@ -79,6 +105,9 @@ else:
         combined_schedules = pd.concat(sched_list, ignore_index=True).drop_duplicates()
     else:
         combined_schedules = pd.DataFrame(columns=['flight_icao'])
+
+    print("Schedule Dep Nulls:", combined_schedules['dep_time_utc'].isnull().sum())
+    print("Schedule Arr Nulls:", combined_schedules['arr_time_utc'].isnull().sum())
 
     if flights_df is not None and not flights_df.empty:
         print("Cleaning live telemetry and schedules...")

@@ -489,9 +489,18 @@ def build_fact_flight(fact_flights, df_clean_schedules, verbose=False):
     """
     original_count = len(fact_flights)
 
+    # Create a date key on schedules to match against live flights by day
+    df_sched_work = df_clean_schedules.copy()
+    if 'scheduled_dep_time' in df_sched_work.columns:
+        df_sched_work['sched_date_key'] = pd.to_datetime(df_sched_work['scheduled_dep_time']).dt.strftime(
+            '%Y%m%d').astype(int)
+    else:
+        df_sched_work['sched_date_key'] = 0
+
     # Only keep the timing data from schedules
     cols_to_keep_from_schedules = [
         'flight_icao',  # Crucial for joining
+        'sched_date_key',
         'scheduled_dep_time',
         'actual_dep_time',
         'scheduled_arr_time',
@@ -501,14 +510,15 @@ def build_fact_flight(fact_flights, df_clean_schedules, verbose=False):
     ]
 
     # Filter schedules to avoid _x and _y suffix conflicts during merge
-    exist_cols = [c for c in cols_to_keep_from_schedules if c in df_clean_schedules.columns]
-    df_sched_subset = df_clean_schedules[exist_cols]
+    exist_cols = [c for c in cols_to_keep_from_schedules if c in df_sched_work.columns]
+    df_sched_subset = df_sched_work[exist_cols].drop_duplicates(subset=['flight_icao', 'sched_date_key'])
 
     # Left join schedules onto live flights master dataframe
     final_fact_df = pd.merge(
         fact_flights,
         df_sched_subset,
-        on='flight_icao',
+        left_on=['flight_icao', 'updated_date_key'],
+        right_on=['flight_icao', 'sched_date_key'],
         how='left'
     )
 
@@ -565,6 +575,12 @@ def load_incremental_flights(engine, fact_flights, dim_flight_position, verbose=
     # Drop any duplicates that exist within the current API payload
     new_facts = new_facts.drop_duplicates(subset=['flight_id'])
 
+    # Filter existing position keys
+    existing_pos_df = pd.read_sql("SELECT position_key FROM dim_flight_position;", engine)
+    existing_positions = existing_pos_df['position_key'].tolist()
+    new_positions = dim_flight_position[~dim_flight_position['position_key'].isin(existing_positions)]
+    new_positions = new_positions.drop_duplicates(subset=['position_key'])
+
     # Track metrics for the return statement
     added_flights_count = len(new_facts)
     added_telemetry_count = len(dim_flight_position)
@@ -575,10 +591,11 @@ def load_incremental_flights(engine, fact_flights, dim_flight_position, verbose=
         if verbose:
             print(f"Added {len(new_facts)} new flights.")
 
-    # Append all telemetry positions
-    dim_flight_position.to_sql('dim_flight_position', engine, if_exists='append', index=False)
-    if verbose:
-        print(f"Appended {len(dim_flight_position)} new telemetry points.")
+    # Append only new telemetry positions
+    if not new_positions.empty:
+        new_positions.to_sql('dim_flight_position', engine, if_exists='append', index=False)
+        if verbose:
+            print(f"Appended {len(new_positions)} new telemetry points.")
 
     return added_flights_count, added_telemetry_count
 
