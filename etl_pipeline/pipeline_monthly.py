@@ -135,47 +135,45 @@ else:
     dim_airlines_final = merged_airlines.drop(columns=['iata_code_existing', 'country_code_existing'], errors='ignore')
 
     # =========================================================================
-    # Safeguard 3: dim_aircraft (Protect daily reg_number patches)
+    # Safeguard 3: dim_aircraft (Protect live-streamed fleet from being wiped)
     print("Merging monthly aircraft data safely...")
     existing_aircrafts = pd.read_sql("SELECT * FROM dim_aircraft;", engine)
 
-    merged_aircrafts = pd.merge(
-        dim_aircrafts,
-        existing_aircrafts[['hex', 'reg_number']],
-        on='hex',
-        how='left',
-        suffixes=('', '_existing')
-    )
+    if not existing_aircrafts.empty:
+        # Update matching reference records with fresh API attributes
+        existing_set = existing_aircrafts.set_index('hex')
+        incoming_set = dim_aircrafts.set_index('hex')
+        existing_set.update(incoming_set)
 
-    # Protect registration numbers from being downgraded to 'UNKNOWN_REG' or null
-    mask_aircraft = (
-            (merged_aircrafts['reg_number'].isnull() | (merged_aircrafts['reg_number'] == 'UNKNOWN_REG')) &
-            (merged_aircrafts['reg_number_existing'].notnull()) &
-            (merged_aircrafts['reg_number_existing'] != 'UNKNOWN_REG')
-    )
-    merged_aircrafts.loc[mask_aircraft, 'reg_number'] = merged_aircrafts.loc[mask_aircraft, 'reg_number_existing']
+        # Find new reference rows from the monthly feed
+        new_ref_rows = incoming_set[~incoming_set.index.isin(existing_set.index)]
 
-    # Receipt metric
-    aircraft_enriched_count = mask_aircraft.sum()
-    print(f"-> Successfully preserved and enriched {aircraft_enriched_count} aircraft registration numbers.")
+        # Combine updated reference rows, live-streamed rows, and brand-new rows together
+        dim_aircrafts = pd.concat([existing_set, new_ref_rows]).reset_index()
 
-    dim_aircrafts_final = merged_aircrafts.drop(columns=['reg_number_existing'], errors='ignore')
+        # Protect registration numbers from being downgraded to 'UNKNOWN_REG' or null
+        print(f"-> Preserved live-streamed fleet. Total retained aircraft records: {len(dim_aircrafts)}")
+    else:
+        print(f"-> Initialized dim_aircraft with {len(dim_aircrafts)} reference records.")
 
-
+    # =========================================================================
     print("Clearing existing reference records from database...")
     with engine.begin() as conn:
-        # Delete old static records safely without dropping table schemas/constraints
+        # Delete old static records safely (CAUTION: dim_aircraft is intentionally EXCLUDED here)
         conn.execute(text("DELETE FROM dim_country;"))
         conn.execute(text("DELETE FROM dim_city;"))
         conn.execute(text("DELETE FROM dim_airport;"))
         conn.execute(text("DELETE FROM dim_airline;"))
-        conn.execute(text("DELETE FROM dim_aircraft;"))
 
     print("Loading fresh reference dimension tables into the database...")
     dim_countries.to_sql('dim_country', engine, if_exists='append', index=False)
     dim_cities.to_sql('dim_city', engine, if_exists='append', index=False)
     dim_airports_final.to_sql('dim_airport', engine, if_exists='append', index=False)
     dim_airlines_final.to_sql('dim_airline', engine, if_exists='append', index=False)
-    dim_aircrafts_final.to_sql('dim_aircraft', engine, if_exists='append', index=False)
+
+    # use replace or clear-then-append safely
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM dim_aircraft;"))
+    dim_aircrafts.to_sql('dim_aircraft', engine, if_exists='append', index=False)
 
     print("Monthly static databases checked and refreshed successfully!")

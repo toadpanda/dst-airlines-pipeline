@@ -179,8 +179,13 @@ For production or scheduled server environments, the monthly and daily scripts c
 * **Composite Key Merging for Flight Schedules:** Updated the `build_fact_flight` pipeline utility to perform a composite join (`flight_icao` + calendar date key) when attaching schedule telemetry to live flights. This eliminates cross-day data corruption, prevents schedule timestamp nullification, and guarantees that inbound and outbound flight records align accurately with their correct operational dates.
 * **Idempotent Telemetry Ingestion:** Enhanced `load_incremental_flights` to query existing `position_key` records prior to insertion. This prevents unique constraint failures when executing the daily pipeline multiple times within the same minute, ensuring safe and repeatable upserts.
 * **Automated Stale Data Cleanup:** Integrated a pre-execution pipeline step in `pipeline_daily.py` utilizing a database-relative date threshold (`MAX(updated_date_key)`) to automatically transition stale "en-route" flights older than 24 hours to "assumed-landed", preventing inflated active flight metrics caused by incomplete global telemetry.
+* **Stable Flight Identity Architecture (`flight_id`):** Refactored `flight_id` generation from callsign + poll date to callsign + scheduled/flight date. This guarantees that the same flight maintains a stable identifier throughout its operating day, allowing subsequent pipeline runs to update its status rather than duplicating rows, while correctly generating fresh IDs for future recurring flights.
+* **High-Precision Telemetry Tracking (`position_key`):** Upgraded `position_key` generation to include high-precision seconds (`HHMMSS` via `telemetry_time_str`), preventing rapid multi-poll telemetry overwriting or data loss within the same minute.
+* **Smart Incremental State Upserts (`load_incremental_flights`):** Refactored the loader to split incoming payloads into `new_facts` and `existing_facts`. Implemented an explicit SQL `UPDATE` loop for existing active flight records to refresh live statuses, coordinates, and timestamps seamlessly throughout the day without ghost accumulation.
 
 ---
 
 ## Future Enhancement
 * **Directional Movement Tracking (movement_type)**: While current analytical queries successfully determine flight directionality using origin and destination code matching relative to the primary hub (LHR), introducing an explicit boolean or categorical movement_type attribute in a future iteration would streamline real-time operational auditing. This would allow the ingestion layer to instantly flag turnaround times and gate-congestions metrics without secondary relational filtering."
+
+---

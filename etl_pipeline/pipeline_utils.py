@@ -1,4 +1,5 @@
 import pandas as pd
+from sqlalchemy import create_engine, text
 
 # =========================================================================
 def clean_airlines_db(df, verbose=False):
@@ -388,14 +389,16 @@ def clean_flights(df_flights, verbose=False):
     original_count = len(df_flights)
     cleaned_df = df_flights.copy()
 
-    # Generate dimensional date and time keys from UNIX timestamp safely
+    # Generate dimensional date, time keys, and high-precision telemetry string from UNIX timestamp safely
     if 'updated' in cleaned_df.columns:
         dt_obj = pd.to_datetime(cleaned_df['updated'], unit='s', errors='coerce')
         cleaned_df['updated_date_key'] = dt_obj.dt.strftime('%Y%m%d').astype(int)
         cleaned_df['updated_time_key'] = dt_obj.dt.hour * 100 + dt_obj.dt.minute
+        telemetry_time_str = dt_obj.dt.strftime('%H%M%S')
     else:
         cleaned_df['updated_date_key'] = 0
         cleaned_df['updated_time_key'] = 0
+        telemetry_time_str = "000000"       # Failsafe Default
 
     # Drop low-density telemetry columns to remove structural noise early
     columns_to_drop = ['squawk', 'v_speed', 'updated']
@@ -412,9 +415,10 @@ def clean_flights(df_flights, verbose=False):
     }
     cleaned_df = cleaned_df.rename(columns=rename_columns)
 
-    # Clean index and generate a Smart Key
+    # Generate Flight Smart Key based on callsign/hex + scheduled/flight date
     base_id = cleaned_df['flight_icao'].fillna(cleaned_df['aircraft_hex']).astype(str)
-    cleaned_df['flight_id'] = base_id + "_" + cleaned_df['updated_date_key'].astype(str)
+    flight_date_key = cleaned_df.get('dep_date_key', cleaned_df['updated_date_key'])
+    cleaned_df['flight_id'] = base_id + "_" + flight_date_key.astype(str)
 
     # Extract parent table fact_flights
     fact_cols = [
@@ -447,9 +451,9 @@ def clean_flights(df_flights, verbose=False):
     ]
     dim_flight_position = cleaned_df[position_cols].copy()
 
-    # Generate a unique smart key for dim_flight_position (flight_id + updated_time_key)
+    # Generate high-precision unique position key (flight_id + HHMMSS)
     dim_flight_position['position_key'] = (
-            dim_flight_position['flight_id'].astype(str) + "_" + cleaned_df['updated_time_key'].astype(str)
+            dim_flight_position['flight_id'].astype(str) + "_" + telemetry_time_str
     )
 
     # Reorder columns to put position_key first
@@ -554,7 +558,8 @@ def build_fact_flight(fact_flights, df_clean_schedules, verbose=False):
 # =========================================================================
 def load_incremental_flights(engine, fact_flights, dim_flight_position, verbose=False):
     """
-    Loads incremental flight records and position telemetry using Python-generated Smart Keys.
+    Loads incremental flight records and position telemetry, inserting new flights
+    and updating active states for existing flights.
 
     Args:
         engine (sqlalchemy.engine.Engine): SQLAlchemy database engine connection.
@@ -566,30 +571,51 @@ def load_incremental_flights(engine, fact_flights, dim_flight_position, verbose=
         tuple: (added_flights_count, added_telemetry_count) representing rows inserted.
     """
     # Check database which flight_ids already exist
-    existing_ids_df = pd.read_sql("SELECT flight_id FROM fact_flight;", engine)
-    existing_ids = existing_ids_df['flight_id'].tolist()
+    with engine.begin() as conn:
+        existing_ids_df = pd.read_sql("SELECT flight_id FROM fact_flight;", conn)
+        existing_ids = set(existing_ids_df['flight_id'].tolist())
 
-    # Filter fact_flight to only keep new, unseen flight_ids
-    new_facts = fact_flights[~fact_flights['flight_id'].isin(existing_ids)]
+        existing_pos_df = pd.read_sql("SELECT position_key FROM dim_flight_position;", conn)
+        existing_positions = set(existing_pos_df['position_key'].tolist())
 
-    # Drop any duplicates that exist within the current API payload
-    new_facts = new_facts.drop_duplicates(subset=['flight_id'])
+    # Split incoming flights into truly new vs. existing active flights to update
+    mask_new = ~fact_flights['flight_id'].isin(existing_ids)
+    new_facts = fact_flights[mask_new].drop_duplicates(subset=['flight_id'])
+    existing_facts = fact_flights[~mask_new].drop_duplicates(subset=['flight_id'])
 
-    # Filter existing position keys
-    existing_pos_df = pd.read_sql("SELECT position_key FROM dim_flight_position;", engine)
-    existing_positions = existing_pos_df['position_key'].tolist()
+    # Filter position telemetry to only append unseen points
     new_positions = dim_flight_position[~dim_flight_position['position_key'].isin(existing_positions)]
     new_positions = new_positions.drop_duplicates(subset=['position_key'])
 
-    # Track metrics for the return statement
-    added_flights_count = len(new_facts)
-    added_telemetry_count = len(dim_flight_position)
+    inserted_flights_count = len(new_facts)
+    updated_flights_count = len(existing_facts)
+    added_telemetry_count = len(new_positions)
 
-    # Append the new flights to the database
+    # Insert new flights
     if not new_facts.empty:
         new_facts.to_sql('fact_flight', engine, if_exists='append', index=False)
         if verbose:
-            print(f"Added {len(new_facts)} new flights.")
+            print(f"Inserted {len(new_facts)} brand new flights.")
+
+    # Update existing active flights with latest telemetry status/timestamps
+    if not existing_facts.empty:
+        with engine.begin() as conn:
+            for _, row in existing_facts.iterrows():
+                update_query = text("""
+                    UPDATE fact_flight
+                    SET status = :status,
+                        updated_date_key = :updated_date_key,
+                        updated_time_key = :updated_time_key
+                    WHERE flight_id = :flight_id;
+                """)
+                conn.execute(update_query, {
+                    "status": row.get('status', 'en-route'),
+                    "updated_date_key": row.get('updated_date_key', 0),
+                    "updated_time_key": row.get('updated_time_key', 0),
+                    "flight_id": row['flight_id']
+                })
+        if verbose:
+            print(f"Updated status/timestamps for {updated_flights_count} existing flights.")
 
     # Append only new telemetry positions
     if not new_positions.empty:
@@ -597,7 +623,7 @@ def load_incremental_flights(engine, fact_flights, dim_flight_position, verbose=
         if verbose:
             print(f"Appended {len(new_positions)} new telemetry points.")
 
-    return added_flights_count, added_telemetry_count
+    return inserted_flights_count, added_telemetry_count
 
 
 # =========================================================================

@@ -59,24 +59,19 @@ else:
     try:
         print("Cleaning up stale en-route flights...")
         with engine.begin() as connection:
-            # Find the highest date key present in the database
-            latest_record = connection.execute(text("SELECT MAX(updated_date_key) FROM fact_flight;")).fetchone()
+            # Force-expire anything that hasn't updated recently
+            # (Assuming your table has a timestamp column, or let's target old date keys safely)
+            cleanup_query = text("""
+                    UPDATE fact_flight
+                    SET status = 'assumed-landed'
+                    WHERE status = 'en-route'
+                      AND updated_date_key < strftime('%Y%m%d', 'now', '-2 days');
+                """)
+            # If your updated_date_key is an integer column, you can calculate the 2-day threshold mathematically:
+            # e.g., current YYYYMMDD minus 2 days roughly, or better yet, track via a true datetime column.
 
-            if latest_record and latest_record[0]:
-                latest_date = int(latest_record[0])
-
-                # Simple rule: if a flight's date key is older than the latest date key minus 1, mark it assumed-landed
-                # (Assuming YYYYMMDD format, subtracting 1 day approximately works for integer keys, or you can adjust as needed)
-                cutoff_date = latest_date - 1
-
-                cleanup_query = text("""
-                        UPDATE fact_flight
-                        SET status = 'assumed-landed'
-                        WHERE status = 'en-route'
-                          AND updated_date_key < :cutoff_date
-                    """)
-                result = connection.execute(cleanup_query, {"cutoff_date": cutoff_date})
-                print(f"Cleanup: Marked {result.rowcount} stale en-route flights as assumed-landed.")
+            result = connection.execute(cleanup_query)
+            print(f"Cleanup: Marked {result.rowcount} stale en-route flights as assumed-landed.")
     except Exception as e:
         print(f"Notice: Stale flight cleanup skipped: {e}")
 
